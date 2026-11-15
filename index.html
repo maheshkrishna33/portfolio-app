@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portfolio</title>
+<meta name="description" content="Track mutual funds and stocks: CAGR, XIRR, fund ratings, tax-free harvesting. Data stays on your phone.">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Portfolio">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+<script>try { if (localStorage.getItem("theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}</script>
+</head>
+<body>
+<header class="appbar">
+  <div><h1>Portfolio</h1><div class="sub" id="dataInfo">Loading…</div></div>
+  <button class="iconbtn" id="refreshBtn" aria-label="Refresh prices">↻</button>
+</header>
+<main id="view"><div class="card muted">Loading…</div></main>
+<button class="fab" id="fab" aria-label="Add transaction">+</button>
+<nav class="bottomnav" id="nav">
+  <button data-tab="home" class="on"><span class="ic">◉</span>Home</button>
+  <button data-tab="growth"><span class="ic">↗</span>Growth</button>
+  <button data-tab="insights"><span class="ic">▤</span>Insights</button>
+  <button data-tab="tax"><span class="ic">₹</span>Tax</button>
+  <button data-tab="more"><span class="ic">⋯</span>More<span class="badge hidden" id="moreBadge"></span></button>
+</nav>
+<div id="tip" class="tip" role="tooltip"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="vendor/xlsx.full.min.js" defer></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

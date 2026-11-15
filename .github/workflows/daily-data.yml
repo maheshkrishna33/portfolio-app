@@ -1,0 +1,72 @@
+name: Daily prices & publish app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Times are UTC. 13:45 UTC = 7:15 pm IST (stock closing prices are out)
+    - cron: "45 13 * * 1-5"
+    # 17:45 UTC = 11:15 pm IST (most fund NAVs are out)
+    - cron: "45 17 * * 1-5"
+    # 03:00 UTC = 8:30 am IST (late NAVs, weekends)
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install requests
+
+      - name: Copy app files
+        run: |
+          mkdir -p _site
+          rsync -a --exclude '.git*' --exclude '_site' --exclude 'tools' --exclude 'seed' --exclude 'README.md' ./ _site/
+
+      # Weekly NAV history for every fund is kept between runs (first run downloads it once, ~15 min)
+      - name: Restore NAV history
+        uses: actions/cache/restore@v4
+        with:
+          path: _navstore
+          key: navstore-${{ github.run_id }}
+          restore-keys: navstore-
+
+      - name: Build market data
+        timeout-minutes: 90
+        env:
+          PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data
+          NAV_STORE: _navstore
+        run: python tools/build_data.py --out _site/data
+
+      - name: Save NAV history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: _navstore
+          key: navstore-${{ github.run_id }}
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
