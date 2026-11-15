@@ -1,4 +1,4 @@
-name: Daily prices & publish app
+﻿name: Daily prices & publish app
 
 on:
   push:
@@ -42,27 +42,27 @@ jobs:
           mkdir -p _site
           rsync -a --exclude '.git*' --exclude '_site' --exclude 'tools' --exclude 'seed' --exclude 'README.md' ./ _site/
 
-      # Weekly NAV history for every fund is kept between runs (first run downloads it once, ~15 min)
+      # NAV history for every fund is kept between runs (first run downloads it once, ~15 min)
       - name: Restore NAV history
         uses: actions/cache/restore@v4
         with:
-          path: _navstore
-          key: navstore-${{ github.run_id }}
-          restore-keys: navstore-
+          path: _navstore3
+          key: navstore3-${{ github.run_id }}
+          restore-keys: navstore3-
 
       - name: Build market data
         timeout-minutes: 90
         env:
           PREV_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/data
-          NAV_STORE: _navstore
+          NAV_STORE: _navstore3
         run: python tools/build_data.py --out _site/data
 
       - name: Save NAV history
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: _navstore
-          key: navstore-${{ github.run_id }}
+          path: _navstore3
+          key: navstore3-${{ github.run_id }}
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

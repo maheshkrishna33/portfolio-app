@@ -230,11 +230,17 @@ def _week(iso):
     return y * 100 + w
 
 
+DAILY_DAYS = 1900  # keep every NAV for the last ~5.2 years (exact 6M/1Y/3Y/5Y returns); weekly before that
+
+
 def _weekly(points):
-    """points ascending [[iso, nav]] -> last point of each ISO week"""
+    """points ascending [[iso, nav]] -> daily for the last DAILY_DAYS, last point of each ISO week before that"""
+    if not points:
+        return points
+    cutoff = (dt.date.fromisoformat(points[-1][0]) - dt.timedelta(days=DAILY_DAYS)).isoformat()
     out = []
     for p in points:
-        if out and _week(out[-1][0]) == _week(p[0]):
+        if p[0] < cutoff and out and out[-1][0] < cutoff and _week(out[-1][0]) == _week(p[0]):
             out[-1] = p
         else:
             out.append(p)
@@ -262,42 +268,50 @@ def update_nav_store(amfi, store_dir, out_dir, limit=6000):
     schemes = [s for s in amfi["s"] if not NON_GROWTH.search(s[1])]
     missing = [s[0] for s in schemes if not os.path.exists(os.path.join(store_dir, s[0] + ".json"))][:limit]
     if missing:
-        log(f"  NAV history: downloading {len(missing)} funds from mfapi.in (first run only)…")
-        done = 0
-        with ThreadPoolExecutor(12) as ex:
-            for code, pts in ex.map(_bootstrap, missing):
-                done += 1
-                if pts:
-                    with open(os.path.join(store_dir, code + ".json"), "w") as f:
-                        json.dump(pts, f, separators=(",", ":"))
-                if done % 500 == 0:
-                    log(f"    {done}/{len(missing)}")
-    n = 0
+        log(f"  NAV history: downloading {len(missing)} funds from mfapi.in (new funds only)…")
+        failed = []
+        for attempt, workers in ((1, 12), (2, 3)):  # second pass retries failures more gently
+            todo, failed, done = (missing if attempt == 1 else failed), [], 0
+            with ThreadPoolExecutor(workers) as ex:
+                for code, pts in ex.map(_bootstrap, todo):
+                    done += 1
+                    if pts:
+                        with open(os.path.join(store_dir, code + ".json"), "w") as f:
+                            json.dump(pts, f, separators=(",", ":"))
+                    else:
+                        failed.append(code)
+                    if done % 500 == 0:
+                        log(f"    {done}/{len(todo)}")
+            if not failed:
+                break
+            log(f"    {len(failed)} downloads failed" + (", retrying" if attempt == 1 else "; will retry next run"))
+    n = partial = 0
     for s in schemes:
         code, nav, d = s[0], s[2], s[4]
         p = os.path.join(store_dir, code + ".json")
         if not os.path.exists(p):
-            pts = [[d, nav]]
-        else:
-            with open(p) as f:
-                pts = json.load(f)
-            if not pts or pts[-1][0] < d:
-                if pts and _week(pts[-1][0]) == _week(d):
-                    pts[-1] = [d, nav]
-                else:
-                    pts.append([d, nav])
-        with open(p, "w") as f:
-            json.dump(pts, f, separators=(",", ":"))
+            # history download failed: publish just the latest NAV, and DON'T save it to the
+            # store, so the full history is fetched again on the next run
+            with open(os.path.join(out_dir, code + ".json"), "w") as f:
+                json.dump([[d, nav]], f)
+            partial += 1
+            continue
+        with open(p) as f:
+            pts = json.load(f)
+        if not pts or pts[-1][0] < d:
+            pts = _weekly(pts + [[d, nav]])
+            with open(p, "w") as f:
+                json.dump(pts, f, separators=(",", ":"))
         shutil.copyfile(p, os.path.join(out_dir, code + ".json"))
         n += 1
-    log(f"  NAV history: {n} funds published")
+    log(f"  NAV history: {n} funds published" + (f", {partial} with latest NAV only (retry next run)" if partial else ""))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--prev-url", default=os.environ.get("PREV_URL"))
-    ap.add_argument("--nav-store", default=os.environ.get("NAV_STORE", "_navstore"))
+    ap.add_argument("--nav-store", default=os.environ.get("NAV_STORE", "_navstore3"))
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     errors = []

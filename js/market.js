@@ -107,10 +107,17 @@ export async function mfHistory(code) {
     throw e;
   }
 }
+/** NAV on/before a date. Recent history is daily (exact); older history is weekly, so a date that
+ *  falls between two weekly points is interpolated — returns then match daily data very closely. */
 export function navOn(rows, date) {
-  let lo = 0, hi = rows.length - 1, ans = null;
-  while (lo <= hi) { const m = (lo + hi) >> 1; if (rows[m][0] <= date) { ans = rows[m]; lo = m + 1; } else hi = m - 1; }
-  return ans;
+  let lo = 0, hi = rows.length - 1, idx = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (rows[m][0] <= date) { idx = m; lo = m + 1; } else hi = m - 1; }
+  if (idx < 0) return null;
+  const p0 = rows[idx], p1 = rows[idx + 1];
+  if (!p1 || p0[0] === date) return p0;
+  const t0 = Date.parse(p0[0]), t1 = Date.parse(p1[0]), t = Date.parse(date);
+  if ((t1 - t0) / 864e5 <= 4) return p0;  // ordinary weekend / holiday gap in daily data
+  return [date, p0[1] + ((p1[1] - p0[1]) * (t - t0)) / (t1 - t0)];
 }
 
 /** Month-end closes for NSE stocks (for the growth chart) — downloaded only when needed */
