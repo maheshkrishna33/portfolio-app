@@ -45,11 +45,11 @@ async function loadPortfolio() {
   S.p = await data.getPortfolio({ account: S.account, kind: S.kind });
   return S.p;
 }
-async function refresh({ force = false, quiet = false } = {}) {
+async function refresh({ force = false, quiet = false, manual = false } = {}) {
   const btn = $("#refreshBtn");
   btn.classList.add("spin");
   try {
-    const { meta, online } = await mk.ensureMarket({ force });
+    const { meta, online } = await mk.ensureMarket({ force, manual });
     await mk.applyPrices();
     const pAll = await data.getPortfolio({});
     const n = await alerts.check(pAll);
@@ -84,7 +84,7 @@ $("#nav").addEventListener("click", (e) => {
   window.scrollTo(0, 0);
   render();
 });
-$("#refreshBtn").addEventListener("click", () => refresh({ force: false }));
+$("#refreshBtn").addEventListener("click", () => refresh({ manual: true }));
 $("#fab").addEventListener("click", () => openTxnForm({}));
 
 async function render() {

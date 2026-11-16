@@ -17,12 +17,21 @@ async function fetchJSON(url, cache = "no-cache") {
 
 /** Android app: refresh NAVs every 3 h, the stock list every 3 days, index lists weekly,
  *  and live prices of the stocks you hold whenever asked (at most once a minute). */
-async function ensureDirect({ force = false } = {}) {
+/** How old the saved NAV list may be before it's downloaded again. AMFI posts each day's NAVs
+ *  fund by fund between about 7 pm and midnight, so in that window check every 15 min
+ *  (every 5 min when you tap ↻); otherwise every 3 h. */
+function navMaxAge(manual) {
+  const ist = new Date(Date.now() + 330 * 60000), h = ist.getUTCHours(), wd = ist.getUTCDay();
+  const evening = wd >= 1 && wd <= 5 && h >= 19, earlyMorning = wd >= 2 && wd <= 6 && h < 10;
+  if (evening || earlyMorning) return (manual ? 5 : 15) * 60e3;
+  return (manual ? 30 : 180) * 60e3;
+}
+async function ensureDirect({ force = false, manual = false } = {}) {
   const now = Date.now();
   const age = async (k) => now - ((await db.kvGet(k + "_t")) || 0);
   let online = true;
   M.errors = {};
-  if (force || (await age("amfi")) > 3 * 3600e3 || !(await db.kvGet("amfi"))) {
+  if (force || (await age("amfi")) > navMaxAge(manual) || !(await db.kvGet("amfi"))) {
     try {
       const a = await direct.amfi(await db.kvGet("amfi"));
       await db.kvSet("amfi", a); await db.kvSet("amfi_t", now);
@@ -130,9 +139,9 @@ export async function quoteNow(sym) {
 
 /** Load market data (web: only when a newer daily build exists; app: live). */
 let inflight = null;
-export async function ensureMarket({ force = false } = {}) {
+export async function ensureMarket({ force = false, manual = false } = {}) {
   if (NATIVE) {  // one download at a time; a second caller waits for the first
-    if (!inflight) inflight = ensureDirect({ force }).finally(() => { inflight = null; });
+    if (!inflight) inflight = ensureDirect({ force, manual }).finally(() => { inflight = null; });
     return inflight;
   }
   let meta = null, online = true;
