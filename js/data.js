@@ -27,6 +27,7 @@ function cleanTxn(d) {
 function newInstrument(id, name, kind, symbol, hint) {
   const [gk, gs] = guessKind(name);
   kind = kind || gk; symbol = symbol || gs;
+  if (kind === "stock") symbol = mk.preferNSE(symbol);  // same company on both exchanges -> NSE price
   const inst = { id, name: name.trim(), kind, symbol, source_name: null, price: hint ?? null, prev_close: null, price_date: null, needs_review: false };
   if (kind === "mf") {
     if (!symbol) {

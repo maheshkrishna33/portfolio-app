@@ -45,9 +45,13 @@ async function ensureDirect({ force = false } = {}) {
       if (Object.keys(ix).length) { await db.kvSet("indices", ix); await db.kvSet("indices_t", now); }
     }
   } catch (e) { /* optional */ }
+  M.stocks = { q: { ...((await db.kvGet("universe")) || {}) } };
+  const before = (await db.all("instruments")).filter((i) => i.symbol?.endsWith(".BO")).length;
+  await migrateToNSE();
   const syms = (await db.all("instruments")).filter((i) => i.kind === "stock" && i.symbol).map((i) => i.symbol);
+  const migrated = before > (await db.all("instruments")).filter((i) => i.symbol?.endsWith(".BO")).length;
   let quotes = (await db.kvGet("quotes")) || {};
-  if (syms.length && (force || (await age("quotes")) > 50e3)) {
+  if (syms.length && (force || migrated || (await age("quotes")) > 50e3)) {
     const q = await direct.quotes(syms).catch(() => ({}));
     if (Object.keys(q).length) { quotes = { ...quotes, ...q }; await db.kvSet("quotes", quotes); await db.kvSet("quotes_t", now); }
     else online = false;
@@ -65,6 +69,23 @@ export const lastErrors = () => M.errors || {};
 export const hasFundList = () => !!M.amfi;
 export const diagnose = () => direct.diagnose();
 export const searchFundsOnline = (q) => direct.searchFundsOnline(q);
+
+/** For a BSE ticker, the same company's NSE ticker when it's listed there (NSE is the usual reference price). */
+export function preferNSE(sym) {
+  if (!sym || !sym.endsWith(".BO")) return sym;
+  const ns = sym.slice(0, -3) + ".NS";
+  return M.stocks?.q?.[ns] ? ns : sym;
+}
+/** One-time switch of existing BSE-priced holdings to their NSE listing (a later manual choice of BSE is kept). */
+async function migrateToNSE() {
+  if (!M.stocks?.q || (await db.kvGet("nse_preferred_v1"))) return;
+  for (const i of await db.all("instruments")) {
+    if (i.kind !== "stock" || !i.symbol?.endsWith(".BO")) continue;
+    const ns = preferNSE(i.symbol);
+    if (ns !== i.symbol) { i.symbol = ns; i.price_date = null; await db.put("instruments", i); }
+  }
+  await db.kvSet("nse_preferred_v1", true);
+}
 
 /** Make the next ensureMarket() fetch fresh stock prices (e.g. after adding new stocks) */
 export async function invalidateQuotes() { await db.kvSet("quotes_t", 0); }
@@ -99,6 +120,7 @@ export async function ensureMarket({ force = false } = {}) {
     M.amfi = amfi; M.stocks = stocks; M.indices = indices; M.byCode = null; M.monthly = null;
   }
   if (!M.amfi) { M.amfi = await db.kvGet("amfi"); M.stocks = await db.kvGet("stocks"); M.indices = await db.kvGet("indices"); }
+  await migrateToNSE();
   M.meta = meta || (await db.kvGet("market_meta"));
   if (!M.amfi) throw new Error(online ? "Market data not available yet" : "You're offline and no market data has been downloaded yet");
   return { meta: M.meta, online };
