@@ -76,15 +76,40 @@ export function preferNSE(sym) {
   const ns = sym.slice(0, -3) + ".NS";
   return M.stocks?.q?.[ns] ? ns : sym;
 }
-/** One-time switch of existing BSE-priced holdings to their NSE listing (a later manual choice of BSE is kept). */
-async function migrateToNSE() {
-  if (!M.stocks?.q || (await db.kvGet("nse_preferred_v1"))) return;
-  for (const i of await db.all("instruments")) {
-    if (i.kind !== "stock" || !i.symbol?.endsWith(".BO")) continue;
-    const ns = preferNSE(i.symbol);
-    if (ns !== i.symbol) { i.symbol = ns; i.price_date = null; await db.put("instruments", i); }
+/** Find a company on NSE by name, for ticker codes that no longer exist (e.g. after a company renamed:
+ *  "HIMADRI CHEMICALS & INDUSTRIES - HIMCI.BO" is now "Himadri Speciality Chemical" = HSCL.NS).
+ *  Returns a symbol only when exactly one NSE company matches. */
+const NOISE = new Set(["LTD", "LIMITED", "THE", "AND", "OF", "CO", "COMPANY", "CORP", "CORPORATION", "L"]);
+const words = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").split(" ").filter((w) => w && !NOISE.has(w));
+export function nseByName(name) {
+  const want = words(String(name).split(" - ")[0]);
+  if (!want.length || !M.stocks?.q) return null;
+  const ns = Object.entries(M.stocks.q).filter(([s]) => s.endsWith(".NS")).map(([s, v]) => [s, words(v[0]).join(" ")]);
+  for (const n of [3, 2, 1]) {
+    if (want.length < n) continue;
+    const key = want.slice(0, n).join(" ");
+    const hits = ns.filter(([, w]) => w === key || w.startsWith(key + " "));
+    if (hits.length === 1) return hits[0][0];
+    if (hits.length > 1) return null;  // ambiguous: don't guess
   }
-  await db.kvSet("nse_preferred_v1", true);
+  return null;
+}
+const known = (sym) => !!M.stocks?.q?.[sym];
+
+/** Keep stock price sources sensible:
+ *  - once: BSE tickers that also trade on NSE switch to NSE (a later manual choice of BSE is kept)
+ *  - always: a ticker that no longer exists is re-linked to the same company on NSE by name (marked "check") */
+async function migrateToNSE() {
+  if (!M.stocks?.q || Object.keys(M.stocks.q).length < 1000) return;
+  const once = !(await db.kvGet("nse_preferred_v1"));
+  for (const i of await db.all("instruments")) {
+    if (i.kind !== "stock" || !i.symbol) continue;
+    let sym = i.symbol, review = i.needs_review;
+    if (once && sym.endsWith(".BO")) sym = preferNSE(sym);
+    if (!known(sym)) { const byName = nseByName(i.name); if (byName) { sym = byName; review = true; } }
+    if (sym !== i.symbol) { Object.assign(i, { symbol: sym, price_date: null, needs_review: review }); await db.put("instruments", i); }
+  }
+  if (once) await db.kvSet("nse_preferred_v1", true);
 }
 
 /** Make the next ensureMarket() fetch fresh stock prices (e.g. after adding new stocks) */

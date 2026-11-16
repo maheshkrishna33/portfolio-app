@@ -28,6 +28,11 @@ function newInstrument(id, name, kind, symbol, hint) {
   const [gk, gs] = guessKind(name);
   kind = kind || gk; symbol = symbol || gs;
   if (kind === "stock") symbol = mk.preferNSE(symbol);  // same company on both exchanges -> NSE price
+  let renamed = false;
+  if (kind === "stock" && symbol && !mk.stock(symbol)) {  // ticker no longer exists: find the company on NSE by name
+    const byName = mk.nseByName(name);
+    if (byName) { symbol = byName; renamed = true; }
+  }
   const inst = { id, name: name.trim(), kind, symbol, source_name: null, price: hint ?? null, prev_close: null, price_date: null, needs_review: false };
   if (kind === "mf") {
     if (!symbol) {
@@ -40,7 +45,8 @@ function newInstrument(id, name, kind, symbol, hint) {
     }
   } else if (symbol) {
     const q = mk.stock(symbol);
-    if (q) Object.assign(inst, { price: q.close, prev_close: q.prev, price_date: q.date });
+    if (q && q.close != null) Object.assign(inst, { price: q.close, prev_close: q.prev, price_date: q.date });
+    if (renamed) inst.needs_review = true;  // linked by company name: ask the user to confirm
   }
   return inst;
 }

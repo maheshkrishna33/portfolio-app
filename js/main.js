@@ -143,7 +143,7 @@ async function renderHome() {
     </div>
     ${s.value ? `<div class="split"><div class="bar"><span style="width:${(mfV / s.value) * 100}%;background:var(--s1)"></span><span style="width:${(stV / s.value) * 100}%;background:var(--s2)"></span></div>
       <div class="legend"><span><i style="background:var(--s1)"></i>Funds ${inrShort(mfV)} · ${((mfV / s.value) * 100).toFixed(0)}%</span><span><i style="background:var(--s2)"></i>Stocks ${inrShort(stV)} · ${((stV / s.value) * 100).toFixed(0)}%</span></div></div>` : ""}
-    ${review || noPrice ? `<div class="banner">${review ? `${review} fund(s) were matched automatically — open them to check the price source. ` : ""}${noPrice ? `${noPrice} holding(s) have no price yet.` : ""}</div>` : ""}
+    ${review || noPrice ? `<div class="banner">${review ? `${review} holding(s) were linked to a price source automatically (marked “check”) — open them to confirm.` : ""}${noPrice ? `${noPrice} holding(s) have no price yet.` : ""}</div>` : ""}
     ${filtersHtml(true)}
     <div class="plbox" id="plBox"></div>
     <div class="list" id="hlist"></div>`;
@@ -692,7 +692,7 @@ async function applyImport(rows, sourceLabel) {
   updateInfo();
   const review = marketOk && mk.hasFundList() ? r.review.length : 0;
   toast(`${r.mode === "replace" ? "Loaded" : "Added"} ${r.added} transactions (${r.created} holdings)${r.skipped ? `, ${r.skipped} duplicates skipped` : ""}` +
-    (marketOk && mk.hasFundList() ? (review ? `. Check ${review} fund match(es).` : "") : ". Prices couldn't be downloaded right now; they'll fill in when you tap ↻."), 7000);
+    (marketOk && mk.hasFundList() ? (review ? `. Check ${review} automatically linked holding(s) (marked “check”).` : "") : ". Prices couldn't be downloaded right now; they'll fill in when you tap ↻."), 7000);
   selectTab("home");
 }
 
