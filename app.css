@@ -141,3 +141,34 @@ input, select { font: inherit; font-size: 16px; color: var(--text); background: 
   border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--text); font: inherit; cursor: pointer; } .menu button:last-child { border: 0; }
 .log { padding: 8px 0; border-bottom: 1px solid var(--line); } .log .small { white-space: pre-line; }
 @media (min-width: 700px) { .tiles { grid-template-columns: repeat(4, 1fr); } }
+
+/* holdings list: Ovr gain and Today, in ₹ and % */
+.item .gl { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.item .gl .lbl { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; }
+.item .gl b { font-weight: 650; }
+.chipbtn { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 10px; padding: 7px 11px; font: inherit; font-size: 14px; cursor: pointer; }
+
+/* Overall / Today chips with tick boxes */
+.plbox { display: grid; gap: 8px; margin: 2px 0 12px; }
+.plbox:empty { display: none; }
+.plgroup { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; animation: plIn .45s ease both; }
+.plgroup + .plgroup { animation-delay: .08s; }
+.pllab { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; width: 58px; }
+.plflat { color: var(--muted); font-size: 12px; }
+.plchip { display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px 6px 8px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); font-size: 13px; user-select: none; transition: transform .15s ease, background .2s ease, border-color .2s ease; }
+.plchip:active { transform: scale(.96); }
+.plchip input { width: 16px; height: 16px; margin: 0; }
+.plchip.up input { accent-color: var(--up); } .plchip.down input { accent-color: var(--down); }
+.plchip b { font-size: 15px; font-variant-numeric: tabular-nums; min-width: 1.3em; text-align: right; }
+.plchip.up b, .plchip.up .arrow { color: var(--up); } .plchip.down b, .plchip.down .arrow { color: var(--down); }
+.plchip .arrow { font-size: 10px; }
+.plchip.up.on { background: color-mix(in srgb, var(--up) 16%, var(--panel)); border-color: var(--up); }
+.plchip.down.on { background: color-mix(in srgb, var(--down) 16%, var(--panel)); border-color: var(--down); }
+.plchip.bump { animation: plBump .55s ease; }
+#plClear { justify-self: start; font-size: 13px; padding: 5px 10px; }
+@keyframes plIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@keyframes plBump { 0% { transform: scale(1); } 35% { transform: scale(1.1); } 100% { transform: scale(1); } }
+.list.animate .item { animation: rowIn .35s ease both; animation-delay: calc(var(--i, 0) * 25ms); }
+@keyframes rowIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .plgroup, .plchip.bump, .list.animate .item { animation: none; } }

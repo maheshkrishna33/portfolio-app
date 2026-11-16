@@ -13,6 +13,15 @@ export async function notify(kind, title, body) {
   const logs = (await db.all("log")).sort((a, b) => b.id - a.id);
   for (const l of logs.slice(300)) await db.del("log", l.id);
   const s = await settings();
+  const LN = window.Capacitor?.isNativePlatform?.() && window.Capacitor.Plugins?.LocalNotifications;
+  if (s.notify && LN) {
+    try {
+      if ((await LN.checkPermissions()).display === "granted") {
+        await LN.schedule({ notifications: [{ id: Math.floor(Date.now() % 2e9), title, body, smallIcon: "ic_stat_notify" }] });
+      }
+    } catch (e) { /* in-app list still has it */ }
+    return;
+  }
   if (s.notify && "Notification" in window && Notification.permission === "granted") {
     try {
       const reg = await navigator.serviceWorker?.getRegistration();

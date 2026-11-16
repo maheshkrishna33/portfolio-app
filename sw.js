@@ -1,8 +1,8 @@
 // Offline support: app files come from the network when available (so updates arrive
 // automatically) and from this cache when offline.
-const CACHE = "portfolio-v1";
+const CACHE = "portfolio-v2";
 const SHELL = ["./", "index.html", "app.css", "manifest.webmanifest", "vendor/xlsx.full.min.js", "icons/icon-192.png", "icons/icon-512.png",
-  "js/main.js", "js/util.js", "js/db.js", "js/calc.js", "js/market.js", "js/data.js", "js/features.js", "js/alerts.js", "js/charts.js", "js/excel.js"];
+  "js/main.js", "js/util.js", "js/db.js", "js/calc.js", "js/market.js", "js/direct.js", "js/data.js", "js/features.js", "js/alerts.js", "js/charts.js", "js/excel.js"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

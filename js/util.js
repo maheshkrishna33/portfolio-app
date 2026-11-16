@@ -39,7 +39,17 @@ export function toast(msg, ms = 2600) {
 }
 
 /** Share a file (phone share sheet: save to Files/OneDrive/Drive/WhatsApp…) or download it */
+const blobToBase64 = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); });
+
 export async function saveFile(blob, filename) {
+  const cap = window.Capacitor;
+  if (cap?.isNativePlatform?.()) {
+    // Android app: write to the app's cache, then open the share sheet (Drive, WhatsApp, Files, email…)
+    const { Filesystem, Share } = cap.Plugins;
+    const res = await Filesystem.writeFile({ path: filename, data: await blobToBase64(blob), directory: "CACHE" });
+    try { await Share.share({ title: filename, url: res.uri, dialogTitle: `Save or send ${filename}` }); return "shared"; }
+    catch (e) { return "cancelled"; }
+  }
   const file = new File([blob], filename, { type: blob.type });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file], title: filename }); return "shared"; }

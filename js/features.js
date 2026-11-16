@@ -26,7 +26,8 @@ export async function growth(account, kind) {
   const codes = [...by.keys()].map((i) => byId.get(i)).filter((i) => i.kind === "mf" && i.symbol).map((i) => i.symbol);
   const hist = new Map();
   await Promise.all(codes.map(async (c) => { try { hist.set(c, await mk.mfHistory(c)); } catch (e) { hist.set(c, []); } }));
-  const monthly = [...by.keys()].some((i) => byId.get(i).kind === "stock") ? (await mk.monthly()).h || {} : {};
+  const stockSyms = [...by.keys()].map((i) => byId.get(i)).filter((i) => i.kind === "stock" && i.symbol).map((i) => i.symbol);
+  const monthly = stockSyms.length ? (await mk.monthly(stockSyms)).h || {} : {};
   const n = samples.length, value = new Array(n).fill(0), invested = new Array(n).fill(0);
   let approxStocks = false;
   for (const [iid, ts] of by) {
@@ -177,7 +178,7 @@ export async function tax() {
       let p = null;
       try {
         if (i.kind === "mf") p = mk.navOn(await mk.mfHistory(i.symbol), GF)?.[1] ?? null;
-        else p = (await mk.monthly()).h?.[i.symbol]?.["2018-01"] ?? null;
+        else p = (await mk.monthly([i.symbol])).h?.[i.symbol]?.["2018-01"] ?? null;
       } catch (e) { p = null; }
       gfCache.set(i.id, p);
     }

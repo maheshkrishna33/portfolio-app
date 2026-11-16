@@ -1,7 +1,11 @@
-// Market data: the daily files published with the app (./data/*.json) + live fund history from mfapi.in.
+// Market data.
+//  * Web version: the daily files published with the site (./data/*.json).
+//  * Android app: fetched directly and live from AMFI, NSE/BSE, Yahoo Finance and mfapi.in (see direct.js).
 import * as db from "./db.js";
+import * as direct from "./direct.js";
 import { todayIST } from "./util.js";
 
+export const NATIVE = !!window.Capacitor?.isNativePlatform?.();
 const BASE = "./data/";
 const M = { amfi: null, byCode: null, stocks: null, indices: null, monthly: null, meta: null };
 
@@ -11,8 +15,80 @@ async function fetchJSON(url, cache = "no-cache") {
   return r.json();
 }
 
-/** Load market files, downloading them again only when a newer daily build exists. */
+/** Android app: refresh NAVs every 3 h, the stock list every 3 days, index lists weekly,
+ *  and live prices of the stocks you hold whenever asked (at most once a minute). */
+async function ensureDirect({ force = false } = {}) {
+  const now = Date.now();
+  const age = async (k) => now - ((await db.kvGet(k + "_t")) || 0);
+  let online = true;
+  M.errors = {};
+  if (force || (await age("amfi")) > 3 * 3600e3 || !(await db.kvGet("amfi"))) {
+    try {
+      const a = await direct.amfi(await db.kvGet("amfi"));
+      await db.kvSet("amfi", a); await db.kvSet("amfi_t", now);
+    } catch (e) {
+      M.errors.amfi = e.message || String(e);
+      try {  // AMFI unreachable: use the backup copy (yesterday evening's NAVs)
+        const a = await direct.amfiMirror();
+        await db.kvSet("amfi", a); await db.kvSet("amfi_t", now - 2.5 * 3600e3);  // retry AMFI in ~30 min
+      } catch (e2) { M.errors.amfi += `; backup: ${e2.message || e2}`; online = false; }
+    }
+  }
+  try {
+    if (force || (await age("universe")) > 3 * 86400e3 || !(await db.kvGet("universe"))) {
+      await db.kvSet("universe", await direct.universe()); await db.kvSet("universe_t", now);
+    }
+  } catch (e) { /* search falls back to the last list */ }
+  try {
+    if (force || (await age("indices")) > 7 * 86400e3 || !(await db.kvGet("indices"))) {
+      const ix = await direct.indexLists();
+      if (Object.keys(ix).length) { await db.kvSet("indices", ix); await db.kvSet("indices_t", now); }
+    }
+  } catch (e) { /* optional */ }
+  const syms = (await db.all("instruments")).filter((i) => i.kind === "stock" && i.symbol).map((i) => i.symbol);
+  let quotes = (await db.kvGet("quotes")) || {};
+  if (syms.length && (force || (await age("quotes")) > 50e3)) {
+    const q = await direct.quotes(syms).catch(() => ({}));
+    if (Object.keys(q).length) { quotes = { ...quotes, ...q }; await db.kvSet("quotes", quotes); await db.kvSet("quotes_t", now); }
+    else online = false;
+  }
+  M.amfi = await db.kvGet("amfi"); M.byCode = null;
+  M.stocks = { q: { ...((await db.kvGet("universe")) || {}), ...quotes } };
+  M.indices = (await db.kvGet("indices")) || {};
+  const qt = await db.kvGet("quotes_t");
+  M.meta = { live: true, built: qt ? new Date(qt + 330 * 60000).toISOString().slice(0, 16).replace("T", " ") : "—",
+    nav_date: M.amfi?.nav_date, trade_dates: { NSE: Object.values(quotes).reduce((m, x) => (x[3] > m ? x[3] : m), "") || null } };
+  if (!M.amfi) throw new Error(`Couldn't download fund NAVs (${M.errors.amfi || "unknown error"}). More › Market data › Test connection shows details.`);
+  return { meta: M.meta, online };
+}
+export const lastErrors = () => M.errors || {};
+export const hasFundList = () => !!M.amfi;
+export const diagnose = () => direct.diagnose();
+export const searchFundsOnline = (q) => direct.searchFundsOnline(q);
+
+/** Make the next ensureMarket() fetch fresh stock prices (e.g. after adding new stocks) */
+export async function invalidateQuotes() { await db.kvSet("quotes_t", 0); }
+
+/** Price for one stock right now (used when you pick a stock to add) */
+export async function quoteNow(sym) {
+  if (NATIVE) {
+    const q = await direct.quotes([sym]);
+    if (q[sym]) {
+      const all = { ...((await db.kvGet("quotes")) || {}), ...q };
+      await db.kvSet("quotes", all);
+      M.stocks.q[sym] = q[sym];
+    }
+  }
+  return stock(sym);
+}
+
+/** Load market data (web: only when a newer daily build exists; app: live). */
+let inflight = null;
 export async function ensureMarket({ force = false } = {}) {
+  if (NATIVE) {  // one download at a time; a second caller waits for the first
+    if (!inflight) inflight = ensureDirect({ force }).finally(() => { inflight = null; });
+    return inflight;
+  }
   let meta = null, online = true;
   try { meta = await fetchJSON(BASE + "meta.json?t=" + Date.now(), "no-store"); } catch (e) { online = false; }
   const have = await db.kvGet("market_built");
@@ -31,6 +107,7 @@ export async function ensureMarket({ force = false } = {}) {
 export const marketMeta = () => M.meta;
 
 function byCode() {
+  if (!M.amfi) return new Map();  // market data not loaded yet
   if (!M.byCode) M.byCode = new Map(M.amfi.s.map((s) => [s[0], s]));
   return M.byCode;
 }
@@ -50,6 +127,11 @@ export const indices = () => M.indices || {};
 export async function applyPrices() {
   const insts = await db.all("instruments");
   for (const i of insts) {
+    if (i.kind === "mf" && !i.symbol && M.amfi) {
+      // imported while the fund list wasn't available: link it now (the sheet's last NAV helps pick the right plan)
+      const [s, ok] = matchFund(i.name, i.price);
+      if (s) Object.assign(i, { symbol: s.code, source_name: s.name, needs_review: !ok });
+    }
     if (!i.symbol) continue;
     if (i.kind === "mf") {
       const s = scheme(i.symbol);
@@ -59,7 +141,7 @@ export async function applyPrices() {
       Object.assign(i, { price: s.nav, prev_close: prev, price_date: s.date, source_name: s.name });
     } else {
       const q = stock(i.symbol);
-      if (!q) continue;
+      if (!q || q.close == null) continue;
       Object.assign(i, { price: q.close, prev_close: q.prev, price_date: q.date });
     }
     await db.put("instruments", i);
@@ -90,8 +172,9 @@ export async function mfHistory(code) {
   if (c && Date.now() - c.t < 12 * 3600e3) { mem.set(code, c.rows); return c.rows; }
   try {
     let rows;
-    try {
-      // weekly history published with the app (same website, never blocked)
+    if (NATIVE) rows = await direct.navHistory(code);  // full daily history, straight from mfapi.in
+    else try {
+      // history published with the app (same website, never blocked)
       rows = await fetchJSON(`${BASE}nav/${code}.json?v=${encodeURIComponent((await db.kvGet("market_built")) || "")}`, "default");
     } catch (e) {
       // not in the daily files (e.g. an IDCW plan): try mfapi.in directly (works for some funds only)
@@ -120,8 +203,18 @@ export function navOn(rows, date) {
   return [date, p0[1] + ((p1[1] - p0[1]) * (t - t0)) / (t1 - t0)];
 }
 
-/** Month-end closes for NSE stocks (for the growth chart) — downloaded only when needed */
-export async function monthly() {
+/** Month-end closes for stocks (for the growth chart) — downloaded only when needed.
+ *  symbols: the stocks needed (the Android app fetches just those; the web version has them all). */
+export async function monthly(symbols = []) {
+  if (NATIVE) {
+    const cache = (await db.kvGet("monthly_direct")) || {};
+    const need = [...new Set(symbols)].filter((s) => !cache[s] || Date.now() - cache[s].t > 7 * 86400e3);
+    for (let i = 0; i < need.length; i += 6) {
+      await Promise.all(need.slice(i, i + 6).map(async (s) => { try { cache[s] = { t: Date.now(), m: await direct.monthlyCloses(s) }; } catch (e) { /* skip */ } }));
+    }
+    if (need.length) await db.kvSet("monthly_direct", cache);
+    return { h: Object.fromEntries(Object.entries(cache).map(([s, v]) => [s, v.m])) };
+  }
   if (M.monthly) return M.monthly;
   const built = await db.kvGet("market_built");
   const c = await db.kvGet("monthly");
@@ -136,7 +229,8 @@ export async function monthly() {
 /** Stock close on/before a date: exact daily close when it's the latest day, else that month's close */
 export async function stockPriceOn(sym, date) {
   const q = stock(sym);
-  if (q && q.date === date) return { date: q.date, price: q.close, exact: true };
+  if (q && q.date === date && q.close != null) return { date: q.date, price: q.close, exact: true };
+  if (NATIVE) return direct.closeOn(sym, date);
   const m = (await monthly()).h?.[sym];
   if (!m) return null;
   const months = Object.keys(m).filter((k) => k <= date.slice(0, 7)).sort();
@@ -168,6 +262,7 @@ function conflicts(q, s) {
 
 /** Best AMFI scheme for a free-text fund name; hint = the NAV you last saw. -> [scheme, confident] */
 export function matchFund(name, hint) {
+  if (!M.amfi) return [null, false];  // fund list not downloaded yet: linked later by applyPrices()
   const q = new Set(tokens(name)), core = [...q].filter((t) => !VARIANT.has(t));
   if (!core.length) return [null, false];
   let cands = M.amfi.s.filter((s) => { const t = stok(s); return core.every((c) => t.has(c)); });

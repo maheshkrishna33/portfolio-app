@@ -24,31 +24,76 @@ function parseDate(v) {
 }
 const num = (v) => (v == null || v === "" ? null : typeof v === "number" ? v : (isFinite(+String(v).replace(/[,₹\s]/g, "")) ? +String(v).replace(/[,₹\s]/g, "") : null));
 
-export function readWorkbook(buf, defaultAccount = "Main") {
-  const wb = XLSX.read(buf, { type: "array", cellDates: true });
-  const sheetName = wb.SheetNames.includes("Transactions") ? "Transactions" : wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
+// Header text -> column key. Exact names first, then looser "contains" rules, so sheets saved
+// by other apps (Excel mobile, Google Sheets, broker exports) are still understood.
+const norm = (h) => String(h ?? "").replace(/[ \s_]+/g, " ").replace(/[^\w %/&().-]/g, "").trim().toLowerCase();
+function headerKey(h) {
+  const k = norm(h);
+  if (!k) return null;
+  for (const [key, names] of Object.entries(ALIASES)) if (names.includes(k)) return key;
+  if (/current|ltp|market (price|value)|latest/.test(k)) return /price|nav|ltp/.test(k) ? "current_price" : null;
+  if (/(scheme|stock|fund|instrument|security|company)( name)?$|^name\b/.test(k)) return "name";
+  if (/date/.test(k)) return "date";
+  if (/^(units?|qty|quantity|shares|no of units)\b|units/.test(k)) return "units";
+  if (/(purchase|buy|investment|avg|average|cost).*(price|nav|rate)|^(price|nav|rate)\b/.test(k)) return "price";
+  if (/account|folio|broker|demat/.test(k)) return "account";
+  if (/^(type|transaction type|buy\/sell|side|action)$/.test(k)) return "type";
+  if (/symbol|ticker|scheme code|amfi/.test(k)) return "symbol";
+  return null;
+}
+
+function sheetRows(ws) {
   // Some exporters write a wrong sheet size; measure it from the cells actually present
-  let maxR = 0, maxC = 0;
+  let maxR = 0, maxC = 0, any = false;
   for (const k of Object.keys(ws)) {
     if (k[0] === "!") continue;
     const c = XLSX.utils.decode_cell(k);
+    any = true;
     if (c.r > maxR) maxR = c.r;
     if (c.c > maxC) maxC = c.c;
   }
+  if (!any) return [];
   ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-  let hdr = -1, cols = {};
-  for (let i = 0; i < Math.min(10, rows.length); i++) {
+  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+}
+
+function findHeader(rows) {
+  for (let i = 0; i < Math.min(30, rows.length); i++) {
     const c = {};
-    (rows[i] || []).forEach((h, j) => {
-      if (h == null) return;
-      const k = String(h).trim().toLowerCase();
-      for (const [key, names] of Object.entries(ALIASES)) if (!(key in c) && names.includes(k)) c[key] = j;
-    });
-    if (["name", "date", "units", "price"].every((k) => k in c)) { hdr = i; cols = c; break; }
+    (rows[i] || []).forEach((h, j) => { const key = headerKey(h); if (key && !(key in c)) c[key] = j; });
+    if (["name", "date", "units", "price"].every((k) => k in c)) return [i, c];
   }
-  if (hdr < 0) throw new Error("Couldn't find the header row (expected: Scheme or Stock name, Investment date, Investment price, Units)");
+  return [-1, null];
+}
+
+export function readWorkbook(buf, defaultAccount = "Main") {
+  const bytes = new Uint8Array(buf.slice ? buf.slice(0, 8) : buf);
+  if (!bytes.length) throw new Error("The file is empty. If it came from WhatsApp or Drive, download it fully first, then import.");
+  const head = String.fromCharCode(...new Uint8Array(buf.slice ? buf.slice(0, 16) : buf).slice(0, 16));
+  if (head.startsWith("MSMAMARPCRYPT")) {
+    throw new Error("This copy of the file has been ENCRYPTED by your company's Microsoft Intune / Office protection " +
+      "(it passed through a work-managed app such as work OneDrive, Outlook or Teams), so no other app can read it.\n\n" +
+      "Send the original file to this phone a personal way instead, e.g. WhatsApp it to yourself from your computer, " +
+      "or email it to your personal Gmail and download it in the Gmail app. Then import it from Downloads.");
+  }
+  let wb;
+  try { wb = XLSX.read(buf, { type: "array", cellDates: true }); }
+  catch (e) { throw new Error(`Couldn't open this file as a spreadsheet (${e.message}). Please pick the .xlsx file itself.`); }
+  // Prefer a "Transactions" sheet (this app's own export), then every other sheet in order
+  const names = [...wb.SheetNames].sort((a, b) => (b === "Transactions") - (a === "Transactions"));
+  let rows = [], hdr = -1, cols = null;
+  const seen = [];
+  for (const n of names) {
+    const r = sheetRows(wb.Sheets[n]);
+    const [h, c] = findHeader(r);
+    if (h >= 0) { rows = r; hdr = h; cols = c; break; }
+    const firstRow = r.find((x) => x && x.some((v) => v != null && String(v).trim() !== ""));
+    seen.push(`“${n}”: ${firstRow ? firstRow.filter((v) => v != null).slice(0, 6).map((v) => String(v).slice(0, 25)).join(" | ") : "empty"}`);
+  }
+  if (hdr < 0) {
+    throw new Error("Couldn't find the column headings. Expected columns like: Scheme or Stock name, Investment date, Investment price, Units. " +
+      `This file has ${seen.length} sheet(s) — ${seen.join("; ")}`);
+  }
   const out = [], errors = [];
   for (let i = hdr + 1; i < rows.length; i++) {
     const r = rows[i] || [], g = (k) => (k in cols ? r[cols[k]] : null);

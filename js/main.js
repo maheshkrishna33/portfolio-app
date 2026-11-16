@@ -8,7 +8,8 @@ import { lineChart, barChart, hbars, showTip, hideTip, tipRow } from "./charts.j
 import { $, $$, esc, inr, signed, pct, cls, inrShort, fmtDate, nf0, nf2, nf3, MON, monLabel, todayIST, toast, saveFile, pickFile } from "./util.js";
 
 const S = {
-  tab: "home", kind: "", account: "", q: "", sort: "value", p: null,
+  tab: "home", kind: "", account: "", q: "", sort: "value", asc: false, p: null,
+  pl: { ovUp: false, ovDown: false, tdUp: false, tdDown: false },
   seg: "monthly", range: "All", monthsRange: 36, weights: { r5y: 5, r1y: 4, r6m: 3, r3y: 2, excess: 1 }, missing: "zero",
 };
 try { Object.assign(S.weights, JSON.parse(localStorage.getItem("weights") || "{}")); } catch (e) { /* ignore */ }
@@ -104,7 +105,8 @@ function filtersHtml(showSearch) {
     <div class="chips" id="kindChips">${[["", "All"], ["mf", "Funds"], ["stock", "Stocks"]].map(([k, l]) => `<button class="${S.kind === k ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>
     ${accts.length > 1 ? `<select id="acctSel"><option value="">All accounts</option>${accts.map((a) => `<option ${a === S.account ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>` : ""}
     ${showSearch ? `<input id="q" type="search" placeholder="Search" value="${esc(S.q)}">
-    <select id="sortSel">${[["value", "Value"], ["gain_pct", "Gain %"], ["day_change_pct", "Today %"], ["xirr", "XIRR"], ["name", "Name"]].map(([k, l]) => `<option value="${k}" ${S.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>` : ""}
+    <select id="sortSel">${[["value", "Value"], ["gain", "Ovr gain"], ["gain_pct", "Ovr gain %"], ["day_change", "Today"], ["day_change_pct", "Today %"], ["xirr", "XIRR"], ["name", "Name"]].map(([k, l]) => `<option value="${k}" ${S.sort === k ? "selected" : ""}>Sort: ${l}</option>`).join("")}</select>
+    <button class="chipbtn" id="sortDir" title="Reverse order">${S.asc ? "↑" : "↓"}</button>` : ""}
   </div>`;
 }
 function bindFilters(rerender) {
@@ -142,22 +144,72 @@ async function renderHome() {
       <div class="legend"><span><i style="background:var(--s1)"></i>Funds ${inrShort(mfV)} · ${((mfV / s.value) * 100).toFixed(0)}%</span><span><i style="background:var(--s2)"></i>Stocks ${inrShort(stV)} · ${((stV / s.value) * 100).toFixed(0)}%</span></div></div>` : ""}
     ${review || noPrice ? `<div class="banner">${review ? `${review} fund(s) were matched automatically — open them to check the price source. ` : ""}${noPrice ? `${noPrice} holding(s) have no price yet.` : ""}</div>` : ""}
     ${filtersHtml(true)}
+    <div class="plbox" id="plBox"></div>
     <div class="list" id="hlist"></div>`;
   bindFilters(renderHome);
-  const draw = () => {
+  const draw = (animate = false) => {
     const q = S.q.toLowerCase(), k = S.sort;
-    const rows = holdings.filter((h) => !q || h.name.toLowerCase().includes(q) || (h.symbol || "").toLowerCase().includes(q))
-      .sort((a, b) => (k === "name" ? a.name.localeCompare(b.name) : (b[k] ?? -1e18) - (a[k] ?? -1e18)));
-    $("#hlist").innerHTML = rows.map((h) => `<button class="item" data-id="${h.id}">
-      <div class="l"><div class="nm"><span class="tag">${h.kind === "mf" ? "MF" : "Stock"}</span>${h.needs_review ? `<span class="tag warn">check</span>` : ""}${esc(h.name)}</div>
+    const found = holdings.filter((h) => !q || h.name.toLowerCase().includes(q) || (h.symbol || "").toLowerCase().includes(q));
+    // highest first (A→Z for names); the ↓/↑ button reverses; holdings without that figure always go last
+    const has = found.filter((h) => k === "name" || h[k] != null), none = found.filter((h) => k !== "name" && h[k] == null);
+    has.sort((a, b) => (k === "name" ? a.name.localeCompare(b.name) : b[k] - a[k]));
+    if (S.asc) has.reverse();
+    let rows = has.concat(none);
+    // Overall / Today chips: counts come from the list before the chip filters, so they stay put when ticked
+    renderPL(rows.filter((h) => h.units > 1e-9));
+    const P = S.pl, ov = P.ovUp || P.ovDown, td = P.tdUp || P.tdDown;
+    if (ov || td) rows = rows.filter((h) => h.units > 1e-9 &&
+      (!ov || (P.ovUp && h.gain > 0) || (P.ovDown && h.gain < 0)) &&
+      (!td || (P.tdUp && h.day_change_pct > 0) || (P.tdDown && h.day_change_pct < 0)));
+    const list = $("#hlist");
+    list.classList.toggle("animate", animate);
+    list.innerHTML = rows.map((h, i) => `<button class="item" data-id="${h.id}" style="--i:${Math.min(i, 20)}">
+      <div class="l"><div class="nm"><span class="tag">${h.kind === "mf" ? "MF" : "Stock"}</span>${h.needs_review ? `<span class="tag warn">check</span>` : ""}<span class="${h.units > 1e-9 ? cls(h.gain) : ""}">${esc(h.name)}</span></div>
         <div class="sub">${nf3.format(h.units)} units · ${h.price != null ? nf2.format(h.price) : "no price"}${h.accounts.length && S.p.accounts.length > 1 ? " · " + esc(h.accounts.join(", ")) : ""}</div></div>
-      <div class="r"><div class="v">${inr(h.value)}</div><div class="${cls(h.gain)}">${pct(h.gain_pct)}</div><div class="sub ${cls(h.day_change_pct)}">${h.day_change_pct != null ? "today " + pct(h.day_change_pct) : ""}</div></div>
-    </button>`).join("") || `<div class="card muted">Nothing matches.</div>`;
+      <div class="r"><div class="v">${inr(h.value)}</div>
+        <div class="gl ${cls(h.gain)}"><span class="lbl">Ovr</span> ${signed(h.gain)} · <b>${pct(h.gain_pct)}</b></div>
+        <div class="gl ${cls(h.day_change)}"><span class="lbl">Today</span> ${h.day_change_pct != null ? `${signed(h.day_change)} · <b>${pct(h.day_change_pct)}</b>` : "—"}</div></div>
+    </button>`).join("") || `<div class="card muted">${ov || td ? "No holdings match the ticked boxes." : "Nothing matches."}</div>`;
   };
-  draw();
+  // tick-box filters on the Overall / Today chips
+  $("#plBox").addEventListener("change", (e) => { const k = e.target.dataset.pl; if (!k) return; S.pl[k] = e.target.checked; draw(true); });
+  $("#plBox").addEventListener("click", (e) => { if (e.target.id !== "plClear") return; Object.keys(S.pl).forEach((k) => (S.pl[k] = false)); draw(true); });
+  draw(true);
   $("#q").addEventListener("input", (e) => { S.q = e.target.value; draw(); });
-  $("#sortSel").addEventListener("change", (e) => { S.sort = e.target.value; draw(); });
+  $("#sortSel").addEventListener("change", (e) => { S.sort = e.target.value; draw(true); });
+  $("#sortDir").addEventListener("click", () => { S.asc = !S.asc; $("#sortDir").textContent = S.asc ? "↑" : "↓"; draw(true); });
   $("#hlist").addEventListener("click", (e) => { const b = e.target.closest(".item"); if (b) openHolding(+b.dataset.id); });
+}
+
+// ---------------------------------------------------------------- Overall / Today profit-loss chips
+const plShown = {};  // last number shown per chip, so changes count up from the old value
+function countUp(el, to) {
+  const from = plShown[el.dataset.k] ?? 0;
+  plShown[el.dataset.k] = to;
+  if (from === to) { el.textContent = to; return; }
+  const chip = el.closest(".plchip");
+  chip?.classList.remove("bump"); void el.offsetWidth; chip?.classList.add("bump");
+  const t0 = performance.now(), dur = 650;
+  const step = (t) => { const p = Math.min(1, (t - t0) / dur), e = 1 - (1 - p) ** 3; el.textContent = Math.round(from + (to - from) * e); if (p < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+function renderPL(held) {
+  const box = $("#plBox");
+  if (!box) return;
+  if (!held.length) { box.innerHTML = ""; return; }
+  const c = { ovUp: held.filter((h) => h.gain > 0).length, ovDown: held.filter((h) => h.gain < 0).length,
+    tdUp: held.filter((h) => h.day_change_pct > 0).length, tdDown: held.filter((h) => h.day_change_pct < 0).length };
+  const ovFlat = held.length - c.ovUp - c.ovDown, tdFlat = held.length - c.tdUp - c.tdDown;
+  const chip = (k, dir, label) => `<label class="plchip ${dir} ${S.pl[k] ? "on" : ""}">
+      <input type="checkbox" data-pl="${k}" ${S.pl[k] ? "checked" : ""}><span class="arrow">${dir === "up" ? "▲" : "▼"}</span>
+      <b data-k="${S.kind}-${k}">${plShown[`${S.kind}-${k}`] ?? 0}</b><span>${label}</span></label>`;
+  const any = Object.values(S.pl).some(Boolean);
+  const what = S.kind === "stock" ? "stocks" : S.kind === "mf" ? "funds" : "holdings";
+  box.innerHTML = `
+    <div class="plgroup"><span class="pllab">Overall</span>${chip("ovUp", "up", "profit")}${chip("ovDown", "down", "loss")}${ovFlat ? `<span class="plflat">${ovFlat} flat</span>` : ""}</div>
+    <div class="plgroup"><span class="pllab">Today</span>${chip("tdUp", "up", "up")}${chip("tdDown", "down", "down")}${tdFlat ? `<span class="plflat">${tdFlat} same</span>` : ""}</div>
+    ${any ? `<button type="button" class="chipbtn" id="plClear">Show all ${what}</button>` : ""}`;
+  box.querySelectorAll("b[data-k]").forEach((b) => countUp(b, c[b.dataset.k.split("-")[1]]));
 }
 
 // ---------------------------------------------------------------- Holding detail
@@ -172,7 +224,7 @@ async function openHolding(id) {
     <p class="muted small">${esc(h.symbol || "No price source")}${h.source_name && h.source_name !== h.name ? " · " + esc(h.source_name) : ""} · price ${h.price != null ? nf2.format(h.price) : "—"} on ${fmtDate(h.price_date)}</p>
     ${h.needs_review ? `<div class="banner">This fund was matched to an AMFI scheme automatically. Check it's the right plan (Direct/Regular, Growth/IDCW) using “Edit / price source”.</div>` : ""}
     <div class="tiles">
-      ${stat("Value", inr(h.value))}${stat("Gain", `${signed(h.gain)}<div class="s">${pct(h.gain_pct)}</div>`, cls(h.gain))}
+      ${stat("Value", inr(h.value))}${stat("Ovr gain", `${signed(h.gain)}<div class="s">${pct(h.gain_pct)}</div>`, cls(h.gain))}
       ${stat("Today", `${signed(h.day_change)}<div class="s">${pct(h.day_change_pct)}</div>`, cls(h.day_change))}${stat("Invested", inr(h.invested))}
       ${stat("Units", nf3.format(h.units))}${stat("Avg cost", h.avg_cost != null ? nf2.format(h.avg_cost) : "—")}
       ${stat("XIRR", pct(h.xirr, false), cls(h.xirr))}${stat("CAGR", pct(h.cagr, false), cls(h.cagr))}
@@ -258,8 +310,21 @@ function openTxnForm({ holding = null, txn = null, type = "BUY" }) {
         .map((h) => ({ existing: true, id: h.id, kind: h.kind, symbol: h.symbol, name: h.name, price: h.price, exchange: "your holding" }));
       const have = new Set(mine.map((m) => m.symbol));
       results = mine.concat([...(kindF !== "stock" ? mk.searchFunds(q, 25) : []), ...(kindF !== "mf" ? mk.searchStocks(q, 20) : [])].filter((r) => !have.has(r.symbol)));
+      draw();
+      // Fund list not downloaded (connection problem)? Search funds online instead.
+      if (kindF !== "stock" && !mk.hasFundList() && mk.NATIVE) {
+        const myQ = q;
+        mk.searchFundsOnline(q).then((online) => {
+          if (b.querySelector("#isq").value.trim() !== myQ) return;
+          const seen = new Set(results.map((r) => r.symbol));
+          results = results.concat(online.filter((r) => !seen.has(r.symbol)));
+          draw();
+        }).catch(() => {});
+      }
+    };
+    const draw = () => {
       b.querySelector("#ires").innerHTML = results.map((r, i) => `<button type="button" class="item" data-i="${i}"><div class="l"><div class="nm"><span class="tag">${r.kind === "mf" ? "MF" : "Stock"}</span>${esc(r.name)}</div>
-        <div class="sub">${esc(r.symbol)} · ${esc(r.exchange || "")}</div></div><div class="r"><div class="v">${r.price != null ? nf2.format(r.price) : ""}</div></div></button>`).join("") || `<div class="muted small pad">Nothing found.</div>`;
+        <div class="sub">${esc(r.symbol)} · ${esc(r.exchange || "")}</div></div><div class="r"><div class="v">${r.price != null ? nf2.format(r.price) : ""}</div></div></button>`).join("") || `<div class="muted small pad">${mk.hasFundList() ? "Nothing found." : "Searching…"}</div>`;
     };
     b.querySelector("#isq").addEventListener("input", search);
     b.querySelector("#isk").addEventListener("click", (e) => { const x = e.target.closest("button"); if (!x) return; kindF = x.dataset.k; $$("button", x.parentNode).forEach((y) => y.classList.toggle("on", y === x)); search(); });
@@ -270,6 +335,9 @@ function openTxnForm({ holding = null, txn = null, type = "BUY" }) {
       inst = r.existing ? { id: r.id, name: r.name, kind: r.kind, symbol: r.symbol } : ex ? { id: ex.id, name: ex.name, kind: ex.kind, symbol: ex.symbol }
         : { name: r.kind === "stock" ? `${r.name.toUpperCase()} - ${r.symbol}` : r.name, kind: r.kind, symbol: r.symbol, price: r.price };
       if (!b.querySelector("#tPrice").value && r.price != null) { b.querySelector("#tPrice").value = r.price; sync(); }
+      if (mk.NATIVE && r.kind === "stock" && b.querySelector("#tDate").value === todayIST()) {
+        mk.quoteNow(r.symbol).then((q) => { if (q?.close != null) { b.querySelector("#tPrice").value = q.close; sync(); msg(`Latest price: ${nf2.format(q.close)}`); } }).catch(() => {});
+      }
       showChosen();
       if (b.querySelector("#tDate").value !== todayIST()) fetchPrice();
     });
@@ -300,7 +368,8 @@ function openTxnForm({ holding = null, txn = null, type = "BUY" }) {
         else await data.addTransaction(inst.id ? { ...body, instrument_id: inst.id } : { ...body, instrument: inst });
         toast("Saved");
         history.go(-sheets.length);
-        setTimeout(render, 300);
+        if (mk.NATIVE && !inst.id && inst.kind === "stock") { await mk.invalidateQuotes(); setTimeout(() => refresh({ quiet: true }), 300); }
+        else setTimeout(render, 300);
       } catch (err) { msg(err.message, true); }
     });
     if (!inst) setTimeout(() => b.querySelector("#isq").focus(), 300);
@@ -522,7 +591,9 @@ async function renderTax() {
 async function renderMore() {
   const meta = mk.marketMeta();
   const n = await alerts.unreadCount();
-  const perm = "Notification" in window ? Notification.permission : "unsupported";
+  const LN = mk.NATIVE ? window.Capacitor.Plugins.LocalNotifications : null;
+  const perm = LN ? ((await LN.checkPermissions().catch(() => ({}))).display === "granted" ? "granted" : "default")
+    : "Notification" in window ? Notification.permission : "unsupported";
   view.innerHTML = `
     <div class="card menu">
       <button data-m="alerts"><span>🔔 Alerts${n ? ` <span class="badge">${n}</span>` : ""}</span><span>›</span></button>
@@ -543,10 +614,14 @@ async function renderMore() {
       <div class="kv"><span>Stock closing prices</span><b>${fmtDate(meta?.trade_dates?.NSE)}</b></div>
       <div class="kv"><span>Fund NAVs</span><b>${fmtDate(meta?.nav_date)}</b></div>
       <div class="kv"><span>Last updated</span><b>${esc(meta?.built || "—")}</b></div>
-      <p class="muted small">Prices are published once a day after market close (about 7:30 pm) and fund NAVs late evening. Tap ↻ to fetch the latest.</p>
+      <p class="muted small">${mk.NATIVE
+        ? "Stock prices come live from Yahoo Finance (refreshed every minute while NSE/BSE is open and the app is on screen). Fund NAVs come from AMFI and update in the evening. Tap ↻ any time."
+        : "Prices are published once a day after market close (about 7:30 pm) and fund NAVs late evening. Tap ↻ to fetch the latest."}</p>
+      ${Object.keys(mk.lastErrors()).length ? `<div class="banner">Last download problem: ${esc(Object.values(mk.lastErrors()).join(" · "))}</div>` : ""}
       <button class="btn block" id="mForce">Re-download all market data</button>
+      ${mk.NATIVE ? `<button class="btn block" id="mDiag">Test connection to price sources</button><div id="diagOut"></div>` : ""}
     </div>
-    <div class="card"><h3>Install on your phone</h3><p class="small"><b>iPhone:</b> open this page in Safari → Share → “Add to Home Screen”.<br><b>Android:</b> Chrome menu ⋮ → “Install app” / “Add to Home screen”.</p></div>`;
+    ${mk.NATIVE ? "" : `<div class="card"><h3>Install on your phone</h3><p class="small"><b>iPhone:</b> open this page in Safari → Share → “Add to Home Screen”.<br><b>Android:</b> Chrome menu ⋮ → “Install app” / “Add to Home screen”.</p></div>`}`;
   view.querySelector(".menu").addEventListener("click", (e) => { const b = e.target.closest("[data-m]"); if (!b) return; b.dataset.m === "alerts" ? openAlerts() : openBackups(); });
   $("#mImport").onclick = importExcel;
   $("#mExport").onclick = exportExcel;
@@ -557,28 +632,54 @@ async function renderMore() {
     catch (e) { toast(e.message, 4000); }
   };
   $("#mTheme").onclick = () => { const light = document.documentElement.dataset.theme !== "light"; if (light) document.documentElement.dataset.theme = "light"; else delete document.documentElement.dataset.theme; try { localStorage.setItem("theme", light ? "light" : "dark"); } catch (e) { /* */ } renderMore(); };
-  $("#mNotif")?.addEventListener("click", async () => { const r = await Notification.requestPermission(); toast(r === "granted" ? "Notifications on" : "Notifications not allowed"); renderMore(); });
+  $("#mNotif")?.addEventListener("click", async () => {
+    const ok = LN ? (await LN.requestPermissions()).display === "granted" : (await Notification.requestPermission()) === "granted";
+    toast(ok ? "Notifications on" : "Notifications not allowed"); renderMore();
+  });
   $("#mForce").onclick = () => refresh({ force: true });
+  $("#mDiag")?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Testing… (up to a minute)";
+    const res = await mk.diagnose();
+    $("#diagOut").innerHTML = res.map((r) => `<div class="kv"><span>${r.ok ? "✅" : "❌"} ${esc(r.name)}</span><span class="small ${r.ok ? "muted" : "down"}">${esc(r.detail)}</span></div>`).join("") +
+      `<p class="muted small">If something shows ❌, take a screenshot of this list. A work profile, VPN, or Wi-Fi filter on the phone can block some sites.</p>`;
+    e.target.disabled = false; e.target.textContent = "Test connection to price sources";
+  });
+}
+
+/** Shared by Excel import and Wi-Fi import: overwrite/append choice, import, prices, summary */
+async function applyImport(rows, sourceLabel) {
+  // Import doesn't need the internet: if prices can't be downloaded right now, funds are
+  // linked to their schemes automatically the next time they are.
+  let marketOk = true;
+  try { await mk.ensureMarket(); } catch (e) { marketOk = false; }
+  const have = (await db.all("txns")).length;
+  let replace = true;
+  if (have) {
+    replace = confirm(`Import ${rows.length} rows from ${sourceLabel}.\n\nOK = Overwrite (replace the ${have} transactions on this phone; a backup is saved first)\nCancel = choose Append instead`);
+    if (!replace && !confirm("Append the new rows to what's already here? (Exact duplicates are skipped.)")) return;
+  }
+  toast("Importing and matching funds…", 6000);
+  const r = await data.importRows(rows, replace);
+  if (mk.NATIVE) { await mk.invalidateQuotes(); try { await mk.ensureMarket(); marketOk = true; } catch (e) { marketOk = false; } }
+  await mk.applyPrices();
+  updateInfo();
+  const review = marketOk && mk.hasFundList() ? r.review.length : 0;
+  toast(`${r.mode === "replace" ? "Loaded" : "Added"} ${r.added} transactions (${r.created} holdings)${r.skipped ? `, ${r.skipped} duplicates skipped` : ""}` +
+    (marketOk && mk.hasFundList() ? (review ? `. Check ${review} fund match(es).` : "") : ". Prices couldn't be downloaded right now; they'll fill in when you tap ↻."), 7000);
+  selectTab("home");
 }
 
 async function importExcel() {
   const f = await pickFile(".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); if (!f) return;
   try {
-    await mk.ensureMarket();
     const rows = readWorkbook(await f.arrayBuffer(), "Main");
-    const have = (await db.all("txns")).length;
-    let replace = true;
-    if (have) {
-      replace = confirm(`Import ${rows.length} rows from “${f.name}”.\n\nOK = Overwrite (replace the ${have} transactions on this phone; a backup is saved first)\nCancel = choose Append instead`);
-      if (!replace && !confirm("Append the new rows to what's already here? (Exact duplicates are skipped.)")) return;
-    }
-    toast("Importing and matching funds…", 6000);
-    const r = await data.importRows(rows, replace);
-    await mk.applyPrices();
-    toast(`${r.mode === "replace" ? "Loaded" : "Added"} ${r.added} transactions (${r.created} holdings)${r.skipped ? `, ${r.skipped} duplicates skipped` : ""}${r.review.length ? `. Check ${r.review.length} fund match(es).` : ""}`, 6000);
-    selectTab("home");
-  } catch (e) { toast(e.message, 5000); }
+    await applyImport(rows, `“${f.name}”`);
+  } catch (e) {
+    // a dialog (not a brief toast) so the details can be read or screenshotted
+    alert(`Couldn't import “${f.name}” (${Math.round(f.size / 1024)} KB, ${f.type || "unknown type"}).\n\n${e.message}`);
+  }
 }
+
 async function exportExcel() {
   try {
     const p = await data.getPortfolio({ includeClosed: true });
@@ -611,7 +712,8 @@ async function openAlerts(focusId) {
     const save = () => alerts.saveSettings({ move_pct: +b.querySelector("#aMove").value || 0, daily_summary: b.querySelector("#aSum").checked, notify: b.querySelector("#aNot").checked });
     ["#aMove", "#aSum", "#aNot"].forEach((x) => b.querySelector(x).addEventListener("change", save));
     b.querySelector("#aTest").onclick = async () => {
-      if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
+      if (mk.NATIVE) await window.Capacitor.Plugins.LocalNotifications.requestPermissions().catch(() => {});
+      else if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
       await alerts.notify("test", "Portfolio alerts are working", "Alerts appear here (and as notifications if allowed)."); toast("Sent"); history.back(); setTimeout(() => openAlerts(), 350);
     };
     b.querySelector("#aSumNow").onclick = async () => { await alerts.sendSummary(pAll); toast("Summary added"); history.back(); setTimeout(() => openAlerts(), 350); };
@@ -644,11 +746,20 @@ async function openBackups() {
 
 // ---------------------------------------------------------------- start
 (async function start() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  if (!mk.NATIVE && "serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  if (mk.NATIVE) document.documentElement.classList.add("native");
   db.persist();
-  try { await mk.ensureMarket().catch(() => {}); } catch (e) { /* offline first run */ }
   updateInfo();
-  await render();
+  await render();  // show saved data immediately
   await data.dailyBackupIfNeeded().catch(() => {});
   refresh({ quiet: true });
+  if (mk.NATIVE) {
+    // live prices: refresh every minute while NSE/BSE is open and the app is on screen
+    setInterval(() => {
+      const t = new Date(Date.now() + (330 + new Date().getTimezoneOffset()) * 60000), m = t.getHours() * 60 + t.getMinutes();
+      const open = t.getDay() > 0 && t.getDay() < 6 && m >= 555 && m <= 935;
+      if (open && document.visibilityState === "visible" && !sheets.length) refresh({ quiet: true });
+    }, 60000);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !sheets.length) refresh({ quiet: true }); });
+  }
 })();
