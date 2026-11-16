@@ -306,4 +306,34 @@ export async function ratings(p) {
       benchmark: ov[h.id] || guessBenchmark(h.source_name || h.name, s.category || ""), ...periodReturns(hist.get(h.symbol) || []) };
   }) };
 }
+/** 1Y return and 3Y CAGR of each holding's own price / NAV (for the "Lagging" filters).
+ *  Funds: NAV history. Stocks: exact closes in the Android app; month-end closes on the web.
+ *  Results are cached on the phone per holding per price date. -> {id: {r1y, r3y}} */
+export async function perfReturns(holdings) {
+  const cache = (await db.kvGet("perf_cache")) || {};
+  const out = {}, fresh = {};
+  const one = async (h) => {
+    const key = `${h.kind}:${h.symbol}:${h.price_date}:${h.price}`;
+    if (cache[key]) { out[h.id] = cache[key]; fresh[key] = cache[key]; return; }
+    let r = { r1y: null, r3y: null };
+    try {
+      if (h.kind === "mf") {
+        const p = periodReturns(await mk.mfHistory(h.symbol));
+        r = { r1y: p.r1y ?? null, r3y: p.r3y ?? null };
+      } else if (h.price != null && h.price_date) {
+        const [a, b] = await Promise.all([mk.stockPriceOn(h.symbol, minus(h.price_date, 1, 0)), mk.stockPriceOn(h.symbol, minus(h.price_date, 3, 0))]);
+        r = { r1y: a?.price ? h.price / a.price - 1 : null, r3y: b?.price ? (h.price / b.price) ** (1 / 3) - 1 : null };
+      }
+    } catch (e) { /* offline: leave as unknown */ }
+    out[h.id] = r; fresh[key] = r;
+  };
+  const list = holdings.filter((h) => h.units > EPS && h.symbol);
+  for (let i = 0; i < list.length; i += 6) await Promise.all(list.slice(i, i + 6).map(one));
+  // keep a week of entries (older price dates are never asked for again)
+  const weekAgo = addDays(todayIST(), -7);
+  const merged = Object.fromEntries(Object.entries({ ...cache, ...fresh }).filter(([k]) => (k.split(":")[2] || "") >= weekAgo));
+  await db.kvSet("perf_cache", merged);
+  return out;
+}
+
 export async function setBenchmark(id, key) { const ov = (await db.kvGet("bench_overrides")) || {}; ov[id] = key; await db.kvSet("bench_overrides", ov); }

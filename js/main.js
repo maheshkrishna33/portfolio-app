@@ -9,10 +9,11 @@ import { $, $$, esc, inr, signed, pct, cls, inrShort, fmtDate, nf0, nf2, nf3, MO
 
 const S = {
   tab: "home", kind: "", account: "", q: "", sort: "value", asc: false, p: null,
-  pl: { ovUp: false, ovDown: false, tdUp: false, tdDown: false },
+  pl: { ovUp: false, ovDown: false, tdUp: false, tdDown: false, y1: false, y3: false }, perf: null, th: { y1: 11, y3: 11 },
   seg: "monthly", range: "All", monthsRange: 36, weights: { r5y: 5, r1y: 4, r6m: 3, r3y: 2, excess: 1 }, missing: "zero",
 };
 try { Object.assign(S.weights, JSON.parse(localStorage.getItem("weights") || "{}")); } catch (e) { /* ignore */ }
+try { Object.assign(S.th, JSON.parse(localStorage.getItem("perfThresholds") || "{}")); } catch (e) { /* ignore */ }
 const view = $("#view");
 const CAP_COLORS = { "Large cap": "var(--s1)", "Mid cap": "var(--s2)", "Small cap": "var(--s3)", "Micro cap": "var(--s4)", Flexible: "var(--s5)", "Other listed": "var(--ink3)" };
 
@@ -105,7 +106,7 @@ function filtersHtml(showSearch) {
     <div class="chips" id="kindChips">${[["", "All"], ["mf", "Funds"], ["stock", "Stocks"]].map(([k, l]) => `<button class="${S.kind === k ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>
     ${accts.length > 1 ? `<select id="acctSel"><option value="">All accounts</option>${accts.map((a) => `<option ${a === S.account ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>` : ""}
     ${showSearch ? `<input id="q" type="search" placeholder="Search" value="${esc(S.q)}">
-    <select id="sortSel">${[["value", "Value"], ["gain", "Ovr gain"], ["gain_pct", "Ovr gain %"], ["day_change", "Today"], ["day_change_pct", "Today %"], ["xirr", "XIRR"], ["name", "Name"]].map(([k, l]) => `<option value="${k}" ${S.sort === k ? "selected" : ""}>Sort: ${l}</option>`).join("")}</select>
+    <select id="sortSel">${[["value", "Value"], ["gain", "Ovr gain"], ["gain_pct", "Ovr gain %"], ["day_change", "Today"], ["day_change_pct", "Today %"], ["xirr", "XIRR"], ["r1y", "1Y return"], ["r3y", "3Y CAGR"], ["name", "Name"]].map(([k, l]) => `<option value="${k}" ${S.sort === k ? "selected" : ""}>Sort: ${l}</option>`).join("")}</select>
     <button class="chipbtn" id="sortDir" title="Reverse order">${S.asc ? "↑" : "↓"}</button>` : ""}
   </div>`;
 }
@@ -148,6 +149,7 @@ async function renderHome() {
     <div class="list" id="hlist"></div>`;
   bindFilters(renderHome);
   const draw = (animate = false) => {
+    holdings.forEach((h) => { const p = S.perf?.[h.id]; h.r1y = p ? p.r1y : null; h.r3y = p ? p.r3y : null; });
     const q = S.q.toLowerCase(), k = S.sort;
     const found = holdings.filter((h) => !q || h.name.toLowerCase().includes(q) || (h.symbol || "").toLowerCase().includes(q));
     // highest first (A→Z for names); the ↓/↑ button reverses; holdings without that figure always go last
@@ -157,22 +159,42 @@ async function renderHome() {
     let rows = has.concat(none);
     // Overall / Today chips: counts come from the list before the chip filters, so they stay put when ticked
     renderPL(rows.filter((h) => h.units > 1e-9));
-    const P = S.pl, ov = P.ovUp || P.ovDown, td = P.tdUp || P.tdDown;
-    if (ov || td) rows = rows.filter((h) => h.units > 1e-9 &&
+    const P = S.pl, ov = P.ovUp || P.ovDown, td = P.tdUp || P.tdDown, lag = P.y1 || P.y3;
+    if (ov || td || lag) rows = rows.filter((h) => h.units > 1e-9 &&
       (!ov || (P.ovUp && h.gain > 0) || (P.ovDown && h.gain < 0)) &&
-      (!td || (P.tdUp && h.day_change_pct > 0) || (P.tdDown && h.day_change_pct < 0)));
+      (!td || (P.tdUp && h.day_change_pct > 0) || (P.tdDown && h.day_change_pct < 0)) &&
+      // both "lagging" boxes ticked = lagging on BOTH 1 year and 3 years
+      (!P.y1 || (h.r1y != null && h.r1y * 100 < S.th.y1)) &&
+      (!P.y3 || (h.r3y != null && h.r3y * 100 < S.th.y3)));
+    const pv = (v, th, suffix = "") => (v == null ? "—" : `<span class="${cls(v)}">${v * 100 < th ? '<i class="lagdot"></i>' : ""}${pct(v)}${suffix}</span>`);
     const list = $("#hlist");
     list.classList.toggle("animate", animate);
     list.innerHTML = rows.map((h, i) => `<button class="item" data-id="${h.id}" style="--i:${Math.min(i, 20)}">
       <div class="l"><div class="nm"><span class="tag">${h.kind === "mf" ? "MF" : "Stock"}</span>${h.needs_review ? `<span class="tag warn">check</span>` : ""}<span class="${h.units > 1e-9 ? cls(h.gain) : ""}">${esc(h.name)}</span></div>
-        <div class="sub">${nf3.format(h.units)} units · ${h.price != null ? nf2.format(h.price) : "no price"}${h.accounts.length && S.p.accounts.length > 1 ? " · " + esc(h.accounts.join(", ")) : ""}</div></div>
+        <div class="sub">${nf3.format(h.units)} units · ${h.price != null ? nf2.format(h.price) : "no price"}${h.accounts.length && S.p.accounts.length > 1 ? " · " + esc(h.accounts.join(", ")) : ""}</div>
+        ${S.perf ? `<div class="sub perf">1Y ${pv(h.r1y, S.th.y1)} · 3Y ${pv(h.r3y, S.th.y3, " p.a.")}</div>` : ""}</div>
       <div class="r"><div class="v">${inr(h.value)}</div>
         <div class="gl ${cls(h.gain)}"><span class="lbl">Ovr</span> ${signed(h.gain)} · <b>${pct(h.gain_pct)}</b></div>
         <div class="gl ${cls(h.day_change)}"><span class="lbl">Today</span> ${h.day_change_pct != null ? `${signed(h.day_change)} · <b>${pct(h.day_change_pct)}</b>` : "—"}</div></div>
-    </button>`).join("") || `<div class="card muted">${ov || td ? "No holdings match the ticked boxes." : "Nothing matches."}</div>`;
+    </button>`).join("") || `<div class="card muted">${ov || td || lag ? "No holdings match the ticked boxes." : "Nothing matches."}</div>`;
   };
-  // tick-box filters on the Overall / Today chips
-  $("#plBox").addEventListener("change", (e) => { const k = e.target.dataset.pl; if (!k) return; S.pl[k] = e.target.checked; draw(true); });
+  // tick-box filters on the chips; threshold boxes recount while typing, refilter when done
+  $("#plBox").addEventListener("change", (e) => {
+    const k = e.target.dataset.pl;
+    if (k) { S.pl[k] = e.target.checked; draw(true); return; }
+    if (e.target.dataset.th) draw(true);
+  });
+  $("#plBox").addEventListener("input", (e) => {
+    const k = e.target.dataset.th; if (!k) return;
+    const v = parseFloat(e.target.value); if (!isFinite(v)) return;
+    S.th[k] = v;
+    try { localStorage.setItem("perfThresholds", JSON.stringify(S.th)); } catch (err) { /* ignore */ }
+    const f = k === "y1" ? "r1y" : "r3y";
+    const n = holdings.filter((h) => h.units > 1e-9 && h[f] != null && h[f] * 100 < v).length;
+    const b = $(`#plBox b[data-k="${S.kind}-${k}"]`); if (b) countUp(b, n);
+  });
+  // 1Y / 3Y returns load in the background (cached per day), then the list refreshes
+  feat.perfReturns(holdings).then((m) => { if (S.tab === "home") { S.perf = { ...(S.perf || {}), ...m }; draw(); } }).catch(() => {});
   $("#plBox").addEventListener("click", (e) => { if (e.target.id !== "plClear") return; Object.keys(S.pl).forEach((k) => (S.pl[k] = false)); draw(true); });
   draw(true);
   $("#q").addEventListener("input", (e) => { S.q = e.target.value; draw(); });
@@ -203,11 +225,16 @@ function renderPL(held) {
   const chip = (k, dir, label) => `<label class="plchip ${dir} ${S.pl[k] ? "on" : ""}">
       <input type="checkbox" data-pl="${k}" ${S.pl[k] ? "checked" : ""}><span class="arrow">${dir === "up" ? "▲" : "▼"}</span>
       <b data-k="${S.kind}-${k}">${plShown[`${S.kind}-${k}`] ?? 0}</b><span>${label}</span></label>`;
+  // under-performers: the stock / fund's own price return below your thresholds
+  c.y1 = held.filter((h) => h.r1y != null && h.r1y * 100 < S.th.y1).length;
+  c.y3 = held.filter((h) => h.r3y != null && h.r3y * 100 < S.th.y3).length;
+  const perfChip = (k, label) => `<span class="plperf">${chip(k, "down", label)}<input type="number" inputmode="decimal" class="thr" data-th="${k}" value="${S.th[k]}" step="0.5">%</span>`;
   const any = Object.values(S.pl).some(Boolean);
   const what = S.kind === "stock" ? "stocks" : S.kind === "mf" ? "funds" : "holdings";
   box.innerHTML = `
     <div class="plgroup"><span class="pllab">Overall</span>${chip("ovUp", "up", "profit")}${chip("ovDown", "down", "loss")}${ovFlat ? `<span class="plflat">${ovFlat} flat</span>` : ""}</div>
     <div class="plgroup"><span class="pllab">Today</span>${chip("tdUp", "up", "up")}${chip("tdDown", "down", "down")}${tdFlat ? `<span class="plflat">${tdFlat} same</span>` : ""}</div>
+    <div class="plgroup"><span class="pllab">Lagging</span>${S.perf ? perfChip("y1", "1Y &lt;") + perfChip("y3", "3Y &lt;") : `<span class="plflat">working out 1Y / 3Y returns…</span>`}</div>
     ${any ? `<button type="button" class="chipbtn" id="plClear">Show all ${what}</button>` : ""}`;
   box.querySelectorAll("b[data-k]").forEach((b) => countUp(b, c[b.dataset.k.split("-")[1]]));
 }
