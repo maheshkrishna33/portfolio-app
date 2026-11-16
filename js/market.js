@@ -20,6 +20,17 @@ async function fetchJSON(url, cache = "no-cache") {
 /** How old the saved NAV list may be before it's downloaded again. AMFI posts each day's NAVs
  *  fund by fund between about 7 pm and midnight, so in that window check every 15 min
  *  (every 5 min when you tap ↻); otherwise every 3 h. */
+function marketOpenIST() {
+  const t = new Date(Date.now() + 330 * 60000), m = t.getUTCHours() * 60 + t.getUTCMinutes();
+  return t.getUTCDay() >= 1 && t.getUTCDay() <= 5 && m >= 555 && m <= 930;
+}
+/** The trading day whose official closes should exist: today after 6 pm, else the weekday before */
+function lastTradingDay() {
+  const t = new Date(Date.now() + 330 * 60000);
+  if (t.getUTCHours() < 18 || t.getUTCDay() === 0 || t.getUTCDay() === 6) t.setUTCDate(t.getUTCDate() - 1);
+  while (t.getUTCDay() === 0 || t.getUTCDay() === 6) t.setUTCDate(t.getUTCDate() - 1);
+  return t.toISOString().slice(0, 10);
+}
 function navMaxAge(manual) {
   const ist = new Date(Date.now() + 330 * 60000), h = ist.getUTCHours(), wd = ist.getUTCDay();
   const evening = wd >= 1 && wd <= 5 && h >= 19, earlyMorning = wd >= 2 && wd <= 6 && h < 10;
@@ -64,6 +75,25 @@ async function ensureDirect({ force = false, manual = false } = {}) {
     const q = await direct.quotes(syms).catch(() => ({}));
     if (Object.keys(q).length) { quotes = { ...quotes, ...q }; await db.kvSet("quotes", quotes); await db.kvSet("quotes_t", now); }
     else online = false;
+  }
+  // Outside market hours, the exchanges' official closing prices replace the last traded price
+  if (syms.length && !marketOpenIST()) {
+    try {
+      const want = lastTradingDay();
+      let off = (await db.kvGet("official")) || {};
+      if (off.day !== want && (force || now - (off.t || 0) > 15 * 60e3)) {
+        const q = await direct.officialCloses(want);
+        if (Object.keys(q).length > 1000) off = { day: want, q, t: now };
+        else off = { ...off, t: now };  // not published yet: try again in 15 min
+        await db.kvSet("official", off);
+      }
+      let changed = false;
+      for (const s of syms) {
+        const o = off.q?.[s];
+        if (o && (!quotes[s] || o[3] >= quotes[s][3])) { quotes[s] = [quotes[s]?.[0] || o[0], o[1], o[2], o[3]]; changed = true; }
+      }
+      if (changed) await db.kvSet("quotes", quotes);
+    } catch (e) { /* keep the live prices */ }
   }
   M.amfi = await db.kvGet("amfi"); M.byCode = null;
   M.stocks = { q: { ...((await db.kvGet("universe")) || {}), ...quotes } };

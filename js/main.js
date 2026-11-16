@@ -45,6 +45,28 @@ async function loadPortfolio() {
   S.p = await data.getPortfolio({ account: S.account, kind: S.kind });
   return S.p;
 }
+/** Safety checks on prices, so a source that silently stops updating gets noticed:
+ *  a stock older than your other stocks, a fund NAV 4+ days behind your other funds,
+ *  a fund missing from AMFI's list, or a >20% one-day move (usually a split/bonus). */
+function priceWarnings(holdings) {
+  const live = holdings.filter((h) => h.units > 1e-9 && h.price_date);
+  const st = live.filter((h) => h.kind === "stock"), mf = live.filter((h) => h.kind === "mf");
+  const top = (a) => a.reduce((m, h) => (h.price_date > m ? h.price_date : m), "");
+  const sTop = top(st), mTop = top(mf);
+  const mCut = mTop ? new Date(Date.parse(mTop) - 4 * 864e5).toISOString().slice(0, 10) : "";
+  const nm = (h) => esc(h.name.split(" - ")[0]);
+  const out = [];
+  const old = st.filter((h) => h.price_date < sTop);
+  if (old.length) out.push(`Old price (will retry): ${old.map((h) => `${nm(h)} (${fmtDate(h.price_date)})`).join(", ")}`);
+  const oldF = mf.filter((h) => h.price_date < mCut);
+  if (oldF.length) out.push(`NAV not updated by AMFI for 4+ days: ${oldF.map((h) => `${nm(h)} (${fmtDate(h.price_date)})`).join(", ")}`);
+  const gone = mk.hasFundList() ? holdings.filter((h) => h.units > 1e-9 && h.kind === "mf" && h.symbol && !mk.scheme(h.symbol)) : [];
+  if (gone.length) out.push(`Fund no longer in AMFI's list (merged or closed?) — open it and use “Edit / price source”: ${gone.map(nm).join(", ")}`);
+  const jump = live.filter((h) => h.prev_close && Math.abs(h.price / h.prev_close - 1) > 0.2);
+  if (jump.length) out.push(`Moved over 20% in a day — check for a split/bonus and add the extra shares: ${jump.map((h) => `${nm(h)} ${pct(h.price / h.prev_close - 1)}`).join(", ")}`);
+  return out.length ? `<div class="banner">⚠ ${out.join("<br>⚠ ")}</div>` : "";
+}
+
 async function refresh({ force = false, quiet = false, manual = false } = {}) {
   const btn = $("#refreshBtn");
   btn.classList.add("spin");
@@ -144,6 +166,7 @@ async function renderHome() {
     ${s.value ? `<div class="split"><div class="bar"><span style="width:${(mfV / s.value) * 100}%;background:var(--s1)"></span><span style="width:${(stV / s.value) * 100}%;background:var(--s2)"></span></div>
       <div class="legend"><span><i style="background:var(--s1)"></i>Funds ${inrShort(mfV)} · ${((mfV / s.value) * 100).toFixed(0)}%</span><span><i style="background:var(--s2)"></i>Stocks ${inrShort(stV)} · ${((stV / s.value) * 100).toFixed(0)}%</span></div></div>` : ""}
     ${review || noPrice ? `<div class="banner">${review ? `${review} holding(s) were linked to a price source automatically (marked “check”) — open them to confirm.` : ""}${noPrice ? `${noPrice} holding(s) have no price yet.` : ""}</div>` : ""}
+    ${priceWarnings(holdings)}
     ${filtersHtml(true)}
     <div class="plbox" id="plBox"></div>
     <div class="list" id="hlist"></div>`;
@@ -171,7 +194,7 @@ async function renderHome() {
     list.classList.toggle("animate", animate);
     list.innerHTML = rows.map((h, i) => `<button class="item" data-id="${h.id}" style="--i:${Math.min(i, 20)}">
       <div class="l"><div class="nm"><span class="tag">${h.kind === "mf" ? "MF" : "Stock"}</span>${h.needs_review ? `<span class="tag warn">check</span>` : ""}<span class="${h.units > 1e-9 ? cls(h.gain) : ""}">${esc(h.name)}</span></div>
-        <div class="sub">${nf3.format(h.units)} units · ${h.price != null ? nf2.format(h.price) : "no price"}${h.accounts.length && S.p.accounts.length > 1 ? " · " + esc(h.accounts.join(", ")) : ""}</div>
+        <div class="sub">${nf3.format(h.units)} units · ${h.price != null ? `<span class="cmp">CMP ${nf2.format(h.price)}</span>` : "no price"}${h.accounts.length && S.p.accounts.length > 1 ? " · " + esc(h.accounts.join(", ")) : ""}</div>
         ${S.perf ? `<div class="sub perf">1Y ${pv(h.r1y, S.th.y1)} · 3Y ${pv(h.r3y, S.th.y3, " p.a.")}</div>` : ""}</div>
       <div class="r"><div class="v">${inr(h.value)}</div>
         <div class="gl ${cls(h.gain)}"><span class="lbl">Ovr</span> ${signed(h.gain)} · <b>${pct(h.gain_pct)}</b></div>
@@ -248,7 +271,7 @@ async function openHolding(id) {
   const stat = (k, v, c = "") => `<div class="tile"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`;
   openSheet(h.kind === "mf" ? "Mutual fund" : "Stock", `
     <h3 class="title">${esc(h.name)}</h3>
-    <p class="muted small">${esc(h.symbol || "No price source")}${h.source_name && h.source_name !== h.name ? " · " + esc(h.source_name) : ""} · price ${h.price != null ? nf2.format(h.price) : "—"} on ${fmtDate(h.price_date)}</p>
+    <p class="muted small">${esc(h.symbol || "No price source")}${h.source_name && h.source_name !== h.name ? " · " + esc(h.source_name) : ""} · <span class="cmp">CMP ${h.price != null ? nf2.format(h.price) : "—"}</span> on ${fmtDate(h.price_date)}</p>
     ${h.needs_review ? `<div class="banner">This fund was matched to an AMFI scheme automatically. Check it's the right plan (Direct/Regular, Growth/IDCW) using “Edit / price source”.</div>` : ""}
     <div class="tiles">
       ${stat("Value", inr(h.value))}${stat("Ovr gain", `${signed(h.gain)}<div class="s">${pct(h.gain_pct)}</div>`, cls(h.gain))}

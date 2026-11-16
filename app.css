@@ -176,3 +176,7 @@ input, select { font: inherit; font-size: 16px; color: var(--text); background: 
 .list.animate .item { animation: rowIn .35s ease both; animation-delay: calc(var(--i, 0) * 25ms); }
 @keyframes rowIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .plgroup, .plchip.bump, .list.animate .item { animation: none; } }
+
+/* current market price */
+.cmp { color: #ffd54a; font-weight: 600; }
+:root[data-theme="light"] .cmp { color: #8a6a00; }

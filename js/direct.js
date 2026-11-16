@@ -145,6 +145,37 @@ export async function indexLists() {
   return out;
 }
 
+/** First file of a .zip (NSE ships its bhavcopy zipped) */
+async function unzipFirst(buf) {
+  const v = new DataView(buf);
+  let e = buf.byteLength - 22;
+  while (e >= 0 && v.getUint32(e, true) !== 0x06054b50) e--;  // end-of-central-directory record
+  if (e < 0) throw new Error("not a zip file");
+  const cd = v.getUint32(e + 16, true);
+  const method = v.getUint16(cd + 10, true), size = v.getUint32(cd + 20, true), loc = v.getUint32(cd + 42, true);
+  const start = loc + 30 + v.getUint16(loc + 26, true) + v.getUint16(loc + 28, true);
+  const data = new Uint8Array(buf, start, size);
+  if (method === 0) return new TextDecoder().decode(data);
+  const s = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return await new Response(s).text();
+}
+const NSE_BHAV = (d) => `https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_${d.replace(/-/g, "")}_F_0000.csv.zip`;
+
+/** The exchanges' official closing prices for one trading day (what brokers show; out ~6-7 pm).
+ *  {"SYM.NS"/"SYM.BO": [name, close, prevClose, date]} — empty if that day's files aren't out. */
+export async function officialCloses(day) {
+  const out = {};
+  const add = (rows, suffix) => { for (const r of rows) if (r.FinInstrmTp === "STK" && r.TckrSymb && +r.ClsPric) out[r.TckrSymb.trim() + suffix] ??= [r.FinInstrmNm, +r.ClsPric, +r.PrvsClsgPric || null, day]; };
+  try {
+    const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 60000);
+    const r = await fetch(NSE_BHAV(day), { headers: UA, signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) add(csv(await unzipFirst(await r.arrayBuffer())), ".NS");
+  } catch (e) { /* NSE not out / unreachable */ }
+  try { add(csv(await text(BSE_BHAV(day))), ".BO"); } catch (e) { /* BSE not out */ }
+  return out;
+}
+
 const istDate = (ts) => new Date((ts + 330 * 60) * 1000).toISOString().slice(0, 10);
 
 /** Latest price (live during market hours) and previous close for each symbol, from Yahoo Finance */
